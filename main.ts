@@ -5,14 +5,10 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// Per-opcode tables: immediate bytes (IMM, -1 = not an opcode), pops, pushes.
-const IMM = new Int8Array(256).fill(-1);
-const POPS = new Uint8Array(256);
-const PUSH = new Uint8Array(256);
+// One packed word per opcode: bits 0-2 immediate bytes + 1 (0 = not an opcode), 3-5 pops, 6-8 pushes.
+const INFO = new Uint16Array(256);
 const def = (op: number, imm: number, pops: number, push: number): void => {
-  IMM[op] = imm;
-  POPS[op] = pops;
-  PUSH[op] = push;
+  INFO[op] = imm + 1 | pops << 3 | push << 6;
 };
 // Opcode order: HALT, PUSH8, PUSH32, POP, DUP, SWAP, OVER, ROT; ADD..LTU by the loop; NEG,
 // NOT; JMP, JZ, JNZ, CALL, RET, LOAD, STORE, PRINT, PUTC, IN, EXIT.
@@ -21,7 +17,7 @@ def(0x02, 4, 0, 1); def(0x03, 0, 1, 0);
 def(0x04, 0, 1, 2); def(0x05, 0, 2, 2);
 def(0x06, 0, 2, 3); def(0x07, 0, 3, 3);
 for (let op = 0x10; op <= 0x22; op++) def(op, 0, 2, 1);
-IMM[0x1f] = -1; // 0x1f is not an opcode
+INFO[0x1f] = 0; // 0x1f is not an opcode
 def(0x17, 0, 1, 1); def(0x1b, 0, 1, 1);
 def(0x30, 2, 0, 0); def(0x31, 2, 1, 0);
 def(0x32, 2, 1, 0); def(0x33, 2, 0, 0);
@@ -69,13 +65,15 @@ function runVm(P: Uint8Array, inp: Uint8Array) {
     if (steps === 1e6) return end(10);
     if (pc < 0 || pc >= n) return end(9);
     const op = P[pc];
-    const imm = IMM[op];
-    if (imm < 0) return end(5);
+    const info = INFO[op];
+    if (info === 0) return end(5);
+    const imm = (info & 7) - 1;
     if (pc + imm >= n) return end(9);
     steps++;
     const next = pc + 1 + imm;
-    if (sp < POPS[op]) return end(2);
-    if (sp - POPS[op] + PUSH[op] > 256) return end(3);
+    const pops = info >> 3 & 7;
+    if (sp < pops) return end(2);
+    if (sp - pops + (info >> 6) > 256) return end(3);
     pc = next;
 
     if (op >= 0x10 && op <= 0x22 && op !== 0x17 && op !== 0x1b) {
